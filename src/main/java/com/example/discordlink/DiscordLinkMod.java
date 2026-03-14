@@ -8,6 +8,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.ServerChatEvent;
+import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import org.slf4j.Logger;
 
@@ -37,12 +38,22 @@ public class DiscordLinkMod {
             LOGGER.info("DiscordLinkMod server starting; Discord bridge is active.");
         }
 
+        @SubscribeEvent
+        public static void onServerStarted(ServerStartedEvent event) {
+            LOGGER.info("DiscordLinkMod server started; sending startup notice to Discord.");
+            sendToDiscord("SERVER", "@minecraft Server has started.");
+        }
+
         @SubscribeEvent(priority = EventPriority.NORMAL)
         public static void onServerChat(ServerChatEvent event) {
             var player = event.getPlayer();
             var message = event.getRawText();
 
-            String json = "{\"player\":\"" + escapeJson(player.getGameProfile().getName())
+            sendToDiscord(player.getGameProfile().getName(), message);
+        }
+
+        private static void sendToDiscord(String player, String message) {
+            String json = "{\"player\":\"" + escapeJson(player)
                     + "\",\"message\":\"" + escapeJson(message) + "\"}";
 
             HttpRequest request = HttpRequest.newBuilder()

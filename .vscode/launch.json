@@ -6,17 +6,17 @@
       "request": "launch",
       "name": "Client",
       "presentation": {
-        "group": "Mod Development - minecraft-mod",
+        "group": "Mod Development - discordlink-neoforge-mod",
         "order": 0
       },
-      "projectName": "minecraft-mod",
+      "projectName": "discordlink-neoforge-mod",
       "mainClass": "net.neoforged.devlaunch.Main",
       "args": [
-        "@C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\build\\moddev\\clientRunProgramArgs.txt"
+        "@C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\build\\moddev\\clientRunProgramArgs.txt"
       ],
       "vmArgs": [
-        "@C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\build\\moddev\\clientRunVmArgs.txt",
-        "-Dfml.modFolders\u003ddiscordlink%%C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\bin\\main"
+        "@C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\build\\moddev\\clientRunVmArgs.txt",
+        "-Dfml.modFolders\u003ddiscordlink%%C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\bin\\main"
       ],
       "cwd": "${workspaceFolder}\\run",
       "env": {},
@@ -28,17 +28,17 @@
       "request": "launch",
       "name": "Data",
       "presentation": {
-        "group": "Mod Development - minecraft-mod",
+        "group": "Mod Development - discordlink-neoforge-mod",
         "order": 1
       },
-      "projectName": "minecraft-mod",
+      "projectName": "discordlink-neoforge-mod",
       "mainClass": "net.neoforged.devlaunch.Main",
       "args": [
-        "@C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\build\\moddev\\dataRunProgramArgs.txt"
+        "@C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\build\\moddev\\dataRunProgramArgs.txt"
       ],
       "vmArgs": [
-        "@C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\build\\moddev\\dataRunVmArgs.txt",
-        "-Dfml.modFolders\u003ddiscordlink%%C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\bin\\main"
+        "@C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\build\\moddev\\dataRunVmArgs.txt",
+        "-Dfml.modFolders\u003ddiscordlink%%C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\bin\\main"
       ],
       "cwd": "${workspaceFolder}\\run",
       "env": {},
@@ -50,17 +50,17 @@
       "request": "launch",
       "name": "GameTestServer",
       "presentation": {
-        "group": "Mod Development - minecraft-mod",
+        "group": "Mod Development - discordlink-neoforge-mod",
         "order": 2
       },
-      "projectName": "minecraft-mod",
+      "projectName": "discordlink-neoforge-mod",
       "mainClass": "net.neoforged.devlaunch.Main",
       "args": [
-        "@C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\build\\moddev\\gameTestServerRunProgramArgs.txt"
+        "@C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\build\\moddev\\gameTestServerRunProgramArgs.txt"
       ],
       "vmArgs": [
-        "@C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\build\\moddev\\gameTestServerRunVmArgs.txt",
-        "-Dfml.modFolders\u003ddiscordlink%%C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\bin\\main"
+        "@C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\build\\moddev\\gameTestServerRunVmArgs.txt",
+        "-Dfml.modFolders\u003ddiscordlink%%C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\bin\\main"
       ],
       "cwd": "${workspaceFolder}\\run",
       "env": {},
@@ -72,17 +72,17 @@
       "request": "launch",
       "name": "Server",
       "presentation": {
-        "group": "Mod Development - minecraft-mod",
+        "group": "Mod Development - discordlink-neoforge-mod",
         "order": 3
       },
-      "projectName": "minecraft-mod",
+      "projectName": "discordlink-neoforge-mod",
       "mainClass": "net.neoforged.devlaunch.Main",
       "args": [
-        "@C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\build\\moddev\\serverRunProgramArgs.txt"
+        "@C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\build\\moddev\\serverRunProgramArgs.txt"
       ],
       "vmArgs": [
-        "@C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\build\\moddev\\serverRunVmArgs.txt",
-        "-Dfml.modFolders\u003ddiscordlink%%C:\\Users\\Franz Jason Dolores\\discord-bot\\minecraft-mod\\bin\\main"
+        "@C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\build\\moddev\\serverRunVmArgs.txt",
+        "-Dfml.modFolders\u003ddiscordlink%%C:\\Users\\Franz Jason Dolores\\discordlink-neoforge-mod\\bin\\main"
       ],
       "cwd": "${workspaceFolder}\\run",
       "env": {},
