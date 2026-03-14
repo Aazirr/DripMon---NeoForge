@@ -1,25 +1,80 @@
+# Discord Link Mod
 
-Installation information
-=======
+NeoForge mod for Minecraft 1.21.1 that forwards Minecraft server activity to a companion Discord bot.
 
-This template repository can be directly cloned to get you started with a new
-mod. Simply create a new repository cloned from this one, by following the
-instructions provided by [GitHub](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
+## What This Mod Does
 
-Once you have your clone, simply open the repository in the IDE of your choice. The usual recommendation for an IDE is either IntelliJ IDEA or Eclipse.
+This mod listens for server events and sends them to the Discord relay bot over HTTP.
 
-If at any point you are missing libraries in your IDE, or you've run into problems you can
-run `gradlew --refresh-dependencies` to refresh the local cache. `gradlew clean` to reset everything 
-{this does not affect your code} and then start the process again.
+Current behavior:
 
-Mapping Names:
-============
-By default, the MDK is configured to use the official mapping names from Mojang for methods and fields 
-in the Minecraft codebase. These names are covered by a specific license. All modders should be aware of this
-license. For the latest license text, refer to the mapping file itself, or the reference copy here:
-https://github.com/NeoForged/NeoForm/blob/main/Mojang.md
+- Sends a startup notice when the Minecraft server finishes starting.
+- Forwards in-game chat messages to the bot.
+- Posts JSON payloads to `http://localhost:3000/mc/chat` by default.
 
-Additional Resources: 
-==========
-Community Documentation: https://docs.neoforged.net/  
-NeoForged Discord: https://discord.neoforged.net/
+The companion bot project lives in the sibling workspace folder `discordlink-bot`.
+
+## Current Event Flow
+
+The mod currently handles these events:
+
+- `ServerStartedEvent` -> sends `SERVER: @minecraft Server has started.`
+- `ServerChatEvent` -> sends `<player name>: <chat message>`
+
+Each event is serialized into JSON like this:
+
+```json
+{
+	"player": "SERVER",
+	"message": "@minecraft Server has started."
+}
+```
+
+The bot receives that payload and posts it into your configured Discord channel.
+
+## Project Structure
+
+- `src/main/java/com/example/discordlink/DiscordLinkMod.java`: main mod logic and event listeners
+- `src/main/templates/META-INF/neoforge.mods.toml`: mod metadata template
+- `gradle.properties`: Minecraft, NeoForge, and mod metadata settings
+
+## Requirements
+
+- Java 21
+- Minecraft 1.21.1
+- NeoForge 21.1.219
+- The `discordlink-bot` service running and reachable from the Minecraft server
+
+## Setup
+
+1. Start the bot from the `discordlink-bot` project.
+2. Configure the bot with a valid Discord bot token and target channel ID.
+3. If the bot is not running on the same machine, update `BOT_BASE_URL` in `DiscordLinkMod.java`.
+4. Launch the Minecraft server with this mod installed.
+
+## Development Notes
+
+- The bot endpoint is currently hardcoded as `http://localhost:3000` in `DiscordLinkMod.java`.
+- HTTP delivery is asynchronous using Java's built-in `HttpClient`.
+- JSON escaping is handled manually before the request body is sent.
+- The current startup text includes `@minecraft` as plain message text. A real Discord role ping requires bot-side handling with the role mention format.
+
+## Useful Commands
+
+On Windows:
+
+```powershell
+.\gradlew.bat runServer
+.\gradlew.bat build
+```
+
+If dependencies get out of sync:
+
+```powershell
+.\gradlew.bat --refresh-dependencies
+.\gradlew.bat clean
+```
+
+## Planned Features
+
+- Allow Discord members to trigger a Minecraft server restart through bot commands
