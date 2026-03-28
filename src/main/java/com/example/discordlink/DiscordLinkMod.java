@@ -38,8 +38,7 @@ public class DiscordLinkMod {
     public static final String MOD_ID = "discordlink";
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    // If your bot is on another machine, change this URL.
-    private static final String BOT_BASE_URL = "http://localhost:3000";
+    private static final String BOT_BASE_URL = resolveBotBaseUrl();
     private static final String BOT_SHARED_SECRET = resolveBridgeSecret();
     private static volatile String runtimeBridgeSecret;
     private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
@@ -47,6 +46,7 @@ public class DiscordLinkMod {
     public DiscordLinkMod(IEventBus modBus) {
         NeoForge.EVENT_BUS.register(ForgeEvents.class);
         LOGGER.info("DiscordLinkMod loaded.");
+        LOGGER.info("Discord bridge target set to {}", BOT_BASE_URL);
 
         if (BOT_SHARED_SECRET == null) {
             LOGGER.warn("DISCORDLINK_SHARED_SECRET is not configured; bot bridge may reject requests.");
@@ -161,6 +161,27 @@ public class DiscordLinkMod {
         }
 
         return null;
+    }
+
+    private static String resolveBotBaseUrl() {
+        String env = System.getenv("DISCORDLINK_BOT_BASE_URL");
+        if (env != null && !env.isBlank()) {
+            return trimTrailingSlash(env.trim());
+        }
+
+        String prop = System.getProperty("discordlink.bot.base.url");
+        if (prop != null && !prop.isBlank()) {
+            return trimTrailingSlash(prop.trim());
+        }
+
+        return "https://dripmon-discord-production.up.railway.app";
+    }
+
+    private static String trimTrailingSlash(String value) {
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        return value;
     }
 
     private static String getCurrentBridgeSecret() {
