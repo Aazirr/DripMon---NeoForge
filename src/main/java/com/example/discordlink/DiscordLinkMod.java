@@ -25,9 +25,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
+import java.security.SecureRandom;
 
 @Mod(DiscordLinkMod.MOD_ID)
 public class DiscordLinkMod {
@@ -36,11 +40,17 @@ public class DiscordLinkMod {
 
     // If your bot is on another machine, change this URL.
     private static final String BOT_BASE_URL = "http://localhost:3000";
+    private static final String BOT_SHARED_SECRET = resolveBridgeSecret();
+    private static volatile String runtimeBridgeSecret;
     private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
     public DiscordLinkMod(IEventBus modBus) {
         NeoForge.EVENT_BUS.register(ForgeEvents.class);
         LOGGER.info("DiscordLinkMod loaded.");
+
+        if (BOT_SHARED_SECRET == null) {
+            LOGGER.warn("DISCORDLINK_SHARED_SECRET is not configured; bot bridge may reject requests.");
+        }
     }
 
     @EventBusSubscriber(modid = MOD_ID, bus = EventBusSubscriber.Bus.GAME)
@@ -71,11 +81,27 @@ public class DiscordLinkMod {
                     });
 
             event.getDispatcher().register(registerTeamCommand);
+
+            LiteralArgumentBuilder<CommandSourceStack> discordSecretCommand = Commands.literal("discordsecret")
+                    .requires(source -> source.hasPermission(4))
+                    .executes(context -> {
+                        var server = context.getSource().getServer();
+                        String secret = ensureRuntimeBridgeSecret(server);
+                        LOGGER.info("[DiscordLink] DISCORDLINK_SHARED_SECRET={}", secret);
+                        context.getSource().sendSuccess(
+                                () -> Component.literal("DiscordLink shared secret printed to server console."),
+                                false
+                        );
+                        return 1;
+                    });
+
+            event.getDispatcher().register(discordSecretCommand);
         }
 
         @SubscribeEvent
         public static void onServerStarting(ServerStartingEvent event) {
             LOGGER.info("DiscordLinkMod server starting; Discord bridge is active.");
+            ensureRuntimeBridgeSecret(event.getServer());
         }
 
         @SubscribeEvent
@@ -99,6 +125,7 @@ public class DiscordLinkMod {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(BOT_BASE_URL + "/mc/chat"))
                     .header("Content-Type", "application/json")
+                    .header("X-DiscordLink-Secret", getCurrentBridgeSecret())
                     .POST(HttpRequest.BodyPublishers.ofString(json))
                     .build();
 
@@ -120,6 +147,72 @@ public class DiscordLinkMod {
                     .replace("\r", "\\r")
                     .replace("\t", "\\t");
         }
+    }
+
+    private static String resolveBridgeSecret() {
+        String env = System.getenv("DISCORDLINK_SHARED_SECRET");
+        if (env != null && !env.isBlank()) {
+            return env.trim();
+        }
+
+        String prop = System.getProperty("discordlink.shared.secret");
+        if (prop != null && !prop.isBlank()) {
+            return prop.trim();
+        }
+
+        return null;
+    }
+
+    private static String getCurrentBridgeSecret() {
+        if (runtimeBridgeSecret != null && !runtimeBridgeSecret.isBlank()) {
+            return runtimeBridgeSecret;
+        }
+
+        if (BOT_SHARED_SECRET != null && !BOT_SHARED_SECRET.isBlank()) {
+            return BOT_SHARED_SECRET;
+        }
+
+        return "";
+    }
+
+    private static String ensureRuntimeBridgeSecret(net.minecraft.server.MinecraftServer server) {
+        if (runtimeBridgeSecret != null && !runtimeBridgeSecret.isBlank()) {
+            return runtimeBridgeSecret;
+        }
+
+        if (BOT_SHARED_SECRET != null && !BOT_SHARED_SECRET.isBlank()) {
+            runtimeBridgeSecret = BOT_SHARED_SECRET;
+            return runtimeBridgeSecret;
+        }
+
+        try {
+            Path configDir = server.getServerDirectory().resolve("config");
+            Files.createDirectories(configDir);
+
+            Path secretFile = configDir.resolve("discordlink-secret.txt");
+            if (Files.exists(secretFile)) {
+                String existing = Files.readString(secretFile).trim();
+                if (!existing.isBlank()) {
+                    runtimeBridgeSecret = existing;
+                    return runtimeBridgeSecret;
+                }
+            }
+
+            String generated = generateSecret();
+            Files.writeString(secretFile, generated + System.lineSeparator());
+            runtimeBridgeSecret = generated;
+            LOGGER.info("Generated DiscordLink shared secret file at {}", secretFile.toAbsolutePath());
+            return runtimeBridgeSecret;
+        } catch (Exception e) {
+            LOGGER.error("Failed to load or generate DiscordLink shared secret", e);
+            return "";
+        }
+    }
+
+    private static String generateSecret() {
+        byte[] bytes = new byte[32];
+        new SecureRandom().nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     private static class CobblemonReflection {
