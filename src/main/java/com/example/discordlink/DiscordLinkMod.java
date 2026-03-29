@@ -1118,22 +1118,28 @@ public class DiscordLinkMod {
 
             Object displayName = invokeMatching(nature, "getDisplayName");
             if (displayName != null) {
+                if (displayName instanceof String display && !display.isBlank()) {
+                    return display.trim();
+                }
                 String displayString = invokeString(displayName, "getString");
                 if (displayString != null && !displayString.isBlank()) {
                     return displayString;
                 }
             }
 
-            String name = invokeString(nature, "getName");
-            if (name != null && !name.isBlank()) {
-                return formatNatureName(name);
+            Object nameValue = invokeMatching(nature, "getName");
+            if (nameValue != null) {
+                String parsed = parseNatureIdentifier(nameValue);
+                if (!parsed.equals("Unknown")) {
+                    return parsed;
+                }
             }
 
             Object nameField = readFieldValue(nature, "name");
             if (nameField != null) {
-                String value = nameField.toString();
-                if (!value.isBlank()) {
-                    return formatNatureName(value);
+                String parsed = parseNatureIdentifier(nameField);
+                if (!parsed.equals("Unknown")) {
+                    return parsed;
                 }
             }
 
@@ -1240,10 +1246,21 @@ public class DiscordLinkMod {
             tryAddStatFromField(values, spread, "spa", "specialAttack", "spAttack", "spa");
             tryAddStatFromField(values, spread, "spd", "specialDefense", "spDefense", "spd");
             tryAddStatFromField(values, spread, "spe", "speed", "spe");
+            tryAddStatsFromBackingStatsField(values, spread);
             tryAddStatsFromIterable(values, spread);
             tryAddStatsFromMapPayload(values, spread);
             tryAddStatsFromArrayPayload(values, spread);
             tryAddStatsUsingStatConstants(values, spread);
+
+            if (!values.isEmpty()) {
+                fillMissingStatsWithZero(values);
+                return "hp=" + values.get("hp")
+                        + ";atk=" + values.get("atk")
+                        + ";def=" + values.get("def")
+                        + ";spa=" + values.get("spa")
+                        + ";spd=" + values.get("spd")
+                        + ";spe=" + values.get("spe");
+            }
 
             if (values.size() == 6) {
                 return "hp=" + values.get("hp")
@@ -1354,6 +1371,22 @@ public class DiscordLinkMod {
             }
         }
 
+        private static void tryAddStatsFromBackingStatsField(Map<String, String> out, Object spread) {
+            if (out.size() >= 6 || spread == null) {
+                return;
+            }
+
+            Object statsField = readFieldValue(spread, "stats");
+            if (statsField instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    String key = normalizeStatKey(entry.getKey());
+                    if (isValidStatKey(key)) {
+                        out.putIfAbsent(key, normalizeStatValue(entry.getValue()));
+                    }
+                }
+            }
+        }
+
         private static void tryAddStatsFromArrayPayload(Map<String, String> out, Object spread) {
             if (out.size() >= 6 || spread == null) {
                 return;
@@ -1396,9 +1429,9 @@ public class DiscordLinkMod {
 
                 Object hp = resolveStatConstant(statContainer, "HP");
                 Object atk = resolveStatConstant(statContainer, "ATTACK", "ATK");
-                Object def = resolveStatConstant(statContainer, "DEFENSE", "DEF");
+                Object def = resolveStatConstant(statContainer, "DEFENSE", "DEFENCE", "DEF");
                 Object spa = resolveStatConstant(statContainer, "SPECIAL_ATTACK", "SP_ATTACK", "SPA");
-                Object spd = resolveStatConstant(statContainer, "SPECIAL_DEFENSE", "SP_DEFENSE", "SPD");
+                Object spd = resolveStatConstant(statContainer, "SPECIAL_DEFENSE", "SPECIAL_DEFENCE", "SP_DEFENSE", "SP_DEFENCE", "SPD");
                 Object spe = resolveStatConstant(statContainer, "SPEED", "SPE");
 
                 tryInvokeSpreadGetter(out, spread, "hp", hp);
@@ -1407,6 +1440,13 @@ public class DiscordLinkMod {
                 tryInvokeSpreadGetter(out, spread, "spa", spa);
                 tryInvokeSpreadGetter(out, spread, "spd", spd);
                 tryInvokeSpreadGetter(out, spread, "spe", spe);
+
+                tryInvokeSpreadGetOrDefault(out, spread, "hp", hp);
+                tryInvokeSpreadGetOrDefault(out, spread, "atk", atk);
+                tryInvokeSpreadGetOrDefault(out, spread, "def", def);
+                tryInvokeSpreadGetOrDefault(out, spread, "spa", spa);
+                tryInvokeSpreadGetOrDefault(out, spread, "spd", spd);
+                tryInvokeSpreadGetOrDefault(out, spread, "spe", spe);
 
                 if (out.size() >= 6) {
                     return;
@@ -1511,6 +1551,35 @@ public class DiscordLinkMod {
             }
         }
 
+        private static void tryInvokeSpreadGetOrDefault(Map<String, String> out, Object spread, String key, Object statConstant) {
+            if (out.containsKey(key) || spread == null || statConstant == null) {
+                return;
+            }
+
+            Method[] methods = spread.getClass().getMethods();
+            for (Method method : methods) {
+                if (!method.getName().equals("getOrDefault") || method.getParameterCount() != 1) {
+                    continue;
+                }
+
+                Class<?> parameter = wrapPrimitive(method.getParameterTypes()[0]);
+                if (!parameter.isAssignableFrom(statConstant.getClass())) {
+                    continue;
+                }
+
+                try {
+                    method.setAccessible(true);
+                    Object value = method.invoke(spread, statConstant);
+                    if (value != null) {
+                        out.put(key, normalizeStatValue(value));
+                        return;
+                    }
+                } catch (Exception ignored) {
+                    // Try next overload.
+                }
+            }
+        }
+
         private static String normalizeStatValue(Object value) {
             if (value == null) {
                 return "0";
@@ -1587,6 +1656,36 @@ public class DiscordLinkMod {
 
             normalized = normalized.replace(".", " ");
             return prettifyToken(normalized);
+        }
+
+        private static String parseNatureIdentifier(Object raw) {
+            if (raw == null) {
+                return "Unknown";
+            }
+
+            String value = raw.toString();
+            if (value == null || value.isBlank()) {
+                return "Unknown";
+            }
+
+            if (looksLikeObjectIdString(value.toLowerCase(Locale.ROOT))) {
+                Object path = invokeMatching(raw, "getPath");
+                if (path instanceof String s && !s.isBlank()) {
+                    return prettifyToken(s);
+                }
+                return "Unknown";
+            }
+
+            return formatNatureName(value);
+        }
+
+        private static void fillMissingStatsWithZero(Map<String, String> values) {
+            values.putIfAbsent("hp", "0");
+            values.putIfAbsent("atk", "0");
+            values.putIfAbsent("def", "0");
+            values.putIfAbsent("spa", "0");
+            values.putIfAbsent("spd", "0");
+            values.putIfAbsent("spe", "0");
         }
 
         private static String normalizeStatKey(Object key) {
