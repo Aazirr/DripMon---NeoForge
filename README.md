@@ -1,27 +1,29 @@
 # Discord Link Mod
 
-NeoForge mod for Minecraft 1.21.1 that forwards Minecraft server activity to a companion Discord bot.
+NeoForge mod for Minecraft 1.21.1 that bridges Minecraft server events and Cobblemon tournament workflows to a companion Discord bot.
 
-## What This Mod Does
+## Version
 
-This mod listens for server events and sends them to the Discord relay bot over HTTP.
+- Current mod version: `1.1.0`
+- Minecraft: `1.21.1`
+- NeoForge: `21.1.219`
 
-Current behavior:
+## Features
 
-- Sends a startup notice when the Minecraft server finishes starting.
-- Forwards in-game chat messages to the bot.
-- Posts JSON payloads to `http://localhost:3000/mc/chat` by default.
+- Sends server startup notice to Discord.
+- Forwards in-game chat messages to Discord.
+- Cobblemon team report command (`/registerteam`).
+- Tournament system with persistent registration snapshots.
+- Team verification checks against registered tournament teams.
+- Shared-secret authentication for mod -> bot bridge requests.
 
-The companion bot project lives in the sibling workspace folder `discordlink-bot`.
+## Discord Bridge
 
-## Current Event Flow
+The mod sends HTTP `POST` requests to:
 
-The mod currently handles these events:
+- `POST <BOT_BASE_URL>/mc/chat`
 
-- `ServerStartedEvent` -> sends `SERVER: @minecraft Server has started.`
-- `ServerChatEvent` -> sends `<player name>: <chat message>`
-
-Each event is serialized into JSON like this:
+JSON payload format:
 
 ```json
 {
@@ -30,36 +32,100 @@ Each event is serialized into JSON like this:
 }
 ```
 
-The bot receives that payload and posts it into your configured Discord channel.
+Auth header sent on every request:
 
-## Project Structure
+- `X-DiscordLink-Secret: <secret>`
 
-- `src/main/java/com/example/discordlink/DiscordLinkMod.java`: main mod logic and event listeners
-- `src/main/templates/META-INF/neoforge.mods.toml`: mod metadata template
-- `gradle.properties`: Minecraft, NeoForge, and mod metadata settings
+## Bot URL Resolution
+
+The mod resolves bot base URL in this order:
+
+1. Environment variable: `DISCORDLINK_BOT_BASE_URL`
+2. JVM property: `-Ddiscordlink.bot.base.url=...`
+3. Built-in fallback: `https://dripmon-discord-production.up.railway.app`
+
+## Shared Secret Resolution
+
+The mod resolves shared secret in this order:
+
+1. Environment variable: `DISCORDLINK_SHARED_SECRET`
+2. JVM property: `-Ddiscordlink.shared.secret=...`
+3. Runtime-generated secret at `config/discordlink-secret.txt`
+
+Admin command:
+
+- `/discordsecret`
+	- Prints active secret to server console.
+	- Useful when secret is generated at runtime and needs to be copied to bot env config.
+
+## Tournament Commands
+
+### Player Commands
+
+- `/registerteam`
+	- Sends current Cobblemon team details to Discord (preview/report behavior).
+- `/registerteam <tournament name>`
+	- Saves or replaces your current team snapshot for that tournament (until locked).
+- `/check <tournament name> <player name>`
+	- Compares target player's current team to their registered team for that tournament.
+	- If matched, broadcasts pass message to server chat.
+- `/unregisterteam <tournament name>`
+	- Removes your registration from an unlocked tournament.
+
+### Admin Commands
+
+- `/registertournament <tournament name>`
+	- Creates a new tournament.
+- `/locktournament <tournament name>`
+	- Locks registrations permanently for that tournament.
+- `/listtournaments`
+	- Lists tournaments with status and registration count.
+- `/tournamentinfo <tournament name>`
+	- Shows tournament details and registered players.
+- `/exporttournament <tournament name>`
+	- Exports registration data to text file under `config/discordlink-exports/`.
+
+## Team Matching Rules
+
+`/check` uses order-insensitive matching:
+
+- Pokemon order does not matter.
+- Move order does not matter.
+
+Fields used for match identity:
+
+- Species
+- Ability
+- Held item
+- Nature
+- Gender
+- Form
+- IV spread
+- EV spread
+- Moveset
+
+Ignored in matching:
+
+- Nickname
+- Shiny flag
+
+## Persistence Files
+
+- `config/discordlink-secret.txt`
+	- Bridge secret (when auto-generated).
+- `config/discordlink-tournaments.json`
+	- Tournament definitions, lock state, and registrations.
+- `config/discordlink-exports/*.txt`
+	- Tournament export reports.
 
 ## Requirements
 
 - Java 21
-- Minecraft 1.21.1
-- NeoForge 21.1.219
-- The `discordlink-bot` service running and reachable from the Minecraft server
+- Minecraft 1.21.1 server with NeoForge 21.1.219
+- Cobblemon installed on server (required for team commands)
+- Companion bot from sibling project: `discordlink-bot`
 
-## Setup
-
-1. Start the bot from the `discordlink-bot` project.
-2. Configure the bot with a valid Discord bot token and target channel ID.
-3. If the bot is not running on the same machine, update `BOT_BASE_URL` in `DiscordLinkMod.java`.
-4. Launch the Minecraft server with this mod installed.
-
-## Development Notes
-
-- The bot endpoint is currently hardcoded as `http://localhost:3000` in `DiscordLinkMod.java`.
-- HTTP delivery is asynchronous using Java's built-in `HttpClient`.
-- JSON escaping is handled manually before the request body is sent.
-- The current startup text includes `@minecraft` as plain message text. A real Discord role ping requires bot-side handling with the role mention format.
-
-## Useful Commands
+## Build and Run
 
 On Windows:
 
@@ -68,13 +134,15 @@ On Windows:
 .\gradlew.bat build
 ```
 
-If dependencies get out of sync:
+If dependencies need refresh:
 
 ```powershell
 .\gradlew.bat --refresh-dependencies
 .\gradlew.bat clean
 ```
 
-## Planned Features
+## Project Structure
 
-- Allow Discord members to trigger a Minecraft server restart through bot commands
+- `src/main/java/com/example/discordlink/DiscordLinkMod.java`: main mod logic, commands, bridge calls, Cobblemon reflection
+- `src/main/templates/META-INF/neoforge.mods.toml`: mod metadata template
+- `gradle.properties`: Minecraft/NeoForge/mod metadata and version values
