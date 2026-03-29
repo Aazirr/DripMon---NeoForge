@@ -1676,6 +1676,11 @@ public class DiscordLinkMod {
                 return "Unknown";
             }
 
+            // Strip "cobblemon.nature." prefix if present (e.g., "cobblemon.nature.naughty" -> "naughty")
+            if (value.startsWith("cobblemon.nature.")) {
+                value = value.substring("cobblemon.nature.".length());
+            }
+
             return formatNatureName(value);
         }
 
