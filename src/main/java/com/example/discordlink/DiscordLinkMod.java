@@ -1,37 +1,52 @@
 package com.example.discordlink;
 
-import com.mojang.logging.LogUtils;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
-import net.neoforged.bus.api.IEventBus;
+import com.mojang.logging.LogUtils;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.EventPriority;
+import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.ServerChatEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
-import net.minecraft.commands.CommandSourceStack;
-import net.minecraft.commands.Commands;
-import net.minecraft.network.chat.Component;
-import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.SecureRandom;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
-import java.security.SecureRandom;
+import java.util.regex.Pattern;
 
 @Mod(DiscordLinkMod.MOD_ID)
 public class DiscordLinkMod {
@@ -42,6 +57,10 @@ public class DiscordLinkMod {
     private static final String BOT_SHARED_SECRET = resolveBridgeSecret();
     private static volatile String runtimeBridgeSecret;
     private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
+
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final Type TOURNAMENT_DATA_TYPE = new TypeToken<TournamentData>() { }.getType();
+    private static final Pattern TOURNAMENT_NAME_PATTERN = Pattern.compile("[A-Za-z0-9 _\\-]{1,40}");
 
     public DiscordLinkMod(IEventBus modBus) {
         NeoForge.EVENT_BUS.register(ForgeEvents.class);
@@ -59,28 +78,74 @@ public class DiscordLinkMod {
         public static void onRegisterCommands(RegisterCommandsEvent event) {
             LiteralArgumentBuilder<CommandSourceStack> registerTeamCommand = Commands.literal("registerteam")
                     .requires(source -> source.getEntity() instanceof ServerPlayer)
-                    .executes(context -> {
-                        ServerPlayer player = (ServerPlayer) context.getSource().getEntity();
-                        if (player == null) {
-                            return 0;
-                        }
-
-                        try {
-                            String teamReport = CobblemonReflection.buildTeamReport(player);
-                            sendToDiscord(player.getGameProfile().getName(), teamReport);
-                            context.getSource().sendSuccess(() -> Component.literal("Your Cobblemon team was sent to Discord."), false);
-                            return 1;
-                        } catch (CobblemonReflection.CobblemonUnavailableException unavailable) {
-                            context.getSource().sendFailure(Component.literal(unavailable.getMessage()));
-                            return 0;
-                        } catch (Exception ex) {
-                            LOGGER.warn("Failed to register Cobblemon team to Discord", ex);
-                            context.getSource().sendFailure(Component.literal("Failed to read your Cobblemon team. Check server logs."));
-                            return 0;
-                        }
-                    });
-
+                    .executes(context -> handleRegisterTeamPreview(context.getSource()))
+                    .then(Commands.argument("tournament", StringArgumentType.greedyString())
+                            .executes(context -> {
+                                String rawName = StringArgumentType.getString(context, "tournament");
+                                return handleRegisterTeamForTournament(context.getSource(), rawName);
+                            }));
             event.getDispatcher().register(registerTeamCommand);
+
+            LiteralArgumentBuilder<CommandSourceStack> registerTournamentCommand = Commands.literal("registertournament")
+                    .requires(source -> source.hasPermission(4))
+                    .then(Commands.argument("tournament", StringArgumentType.greedyString())
+                            .executes(context -> {
+                                String rawName = StringArgumentType.getString(context, "tournament");
+                                return handleRegisterTournament(context.getSource(), rawName);
+                            }));
+            event.getDispatcher().register(registerTournamentCommand);
+
+            LiteralArgumentBuilder<CommandSourceStack> lockTournamentCommand = Commands.literal("locktournament")
+                    .requires(source -> source.hasPermission(4))
+                    .then(Commands.argument("tournament", StringArgumentType.greedyString())
+                            .executes(context -> {
+                                String rawName = StringArgumentType.getString(context, "tournament");
+                                return handleLockTournament(context.getSource(), rawName);
+                            }));
+            event.getDispatcher().register(lockTournamentCommand);
+
+            LiteralArgumentBuilder<CommandSourceStack> checkCommand = Commands.literal("check")
+                    .requires(source -> source.getEntity() instanceof ServerPlayer || source.hasPermission(4))
+                    .then(Commands.argument("tournament", StringArgumentType.string())
+                            .then(Commands.argument("player", StringArgumentType.word())
+                                    .executes(context -> {
+                                        String rawTournament = StringArgumentType.getString(context, "tournament");
+                                        String playerName = StringArgumentType.getString(context, "player");
+                                        return handleCheckTournamentTeam(context.getSource(), rawTournament, playerName);
+                                    })));
+            event.getDispatcher().register(checkCommand);
+
+            LiteralArgumentBuilder<CommandSourceStack> unregisterTeamCommand = Commands.literal("unregisterteam")
+                    .requires(source -> source.getEntity() instanceof ServerPlayer)
+                    .then(Commands.argument("tournament", StringArgumentType.greedyString())
+                            .executes(context -> {
+                                String rawName = StringArgumentType.getString(context, "tournament");
+                                return handleUnregisterTeam(context.getSource(), rawName);
+                            }));
+            event.getDispatcher().register(unregisterTeamCommand);
+
+            LiteralArgumentBuilder<CommandSourceStack> listTournamentsCommand = Commands.literal("listtournaments")
+                    .requires(source -> source.getEntity() instanceof ServerPlayer || source.hasPermission(2))
+                    .executes(context -> handleListTournaments(context.getSource()));
+            event.getDispatcher().register(listTournamentsCommand);
+
+            LiteralArgumentBuilder<CommandSourceStack> tournamentInfoCommand = Commands.literal("tournamentinfo")
+                    .requires(source -> source.getEntity() instanceof ServerPlayer || source.hasPermission(2))
+                    .then(Commands.argument("tournament", StringArgumentType.greedyString())
+                            .executes(context -> {
+                                String rawName = StringArgumentType.getString(context, "tournament");
+                                return handleTournamentInfo(context.getSource(), rawName);
+                            }));
+            event.getDispatcher().register(tournamentInfoCommand);
+
+            LiteralArgumentBuilder<CommandSourceStack> exportTournamentCommand = Commands.literal("exporttournament")
+                    .requires(source -> source.hasPermission(4))
+                    .then(Commands.argument("tournament", StringArgumentType.greedyString())
+                            .executes(context -> {
+                                String rawName = StringArgumentType.getString(context, "tournament");
+                                return handleExportTournament(context.getSource(), rawName);
+                            }));
+            event.getDispatcher().register(exportTournamentCommand);
 
             LiteralArgumentBuilder<CommandSourceStack> discordSecretCommand = Commands.literal("discordsecret")
                     .requires(source -> source.hasPermission(4))
@@ -94,7 +159,6 @@ public class DiscordLinkMod {
                         );
                         return 1;
                     });
-
             event.getDispatcher().register(discordSecretCommand);
         }
 
@@ -114,8 +178,361 @@ public class DiscordLinkMod {
         public static void onServerChat(ServerChatEvent event) {
             var player = event.getPlayer();
             var message = event.getRawText();
-
             sendToDiscord(player.getGameProfile().getName(), message);
+        }
+
+        private static int handleRegisterTeamPreview(CommandSourceStack source) {
+            ServerPlayer player = source.getPlayer();
+            if (player == null) {
+                source.sendFailure(Component.literal("Only players can use this command."));
+                return 0;
+            }
+
+            try {
+                String teamReport = CobblemonReflection.buildTeamReport(player);
+                sendToDiscord(player.getGameProfile().getName(), teamReport);
+                source.sendSuccess(() -> Component.literal("Your Cobblemon team was sent to Discord."), false);
+                return 1;
+            } catch (CobblemonReflection.CobblemonUnavailableException unavailable) {
+                source.sendFailure(Component.literal(unavailable.getMessage()));
+                return 0;
+            } catch (Exception ex) {
+                LOGGER.warn("Failed to build Cobblemon team report", ex);
+                source.sendFailure(Component.literal("Failed to read your Cobblemon team. Check server logs."));
+                return 0;
+            }
+        }
+
+        private static int handleRegisterTournament(CommandSourceStack source, String rawName) {
+            String tournamentInput = cleanTournamentInput(rawName);
+            String validationError = validateTournamentName(tournamentInput);
+            if (validationError != null) {
+                source.sendFailure(Component.literal(validationError));
+                return 0;
+            }
+
+            String normalized = normalizeTournamentName(tournamentInput);
+            TournamentData data = loadTournamentData(source.getServer());
+            if (data.tournaments.containsKey(normalized)) {
+                source.sendFailure(Component.literal("Tournament already exists: " + data.tournaments.get(normalized).displayName));
+                return 0;
+            }
+
+            TournamentRecord record = new TournamentRecord();
+            record.displayName = tournamentInput;
+            record.createdAt = Instant.now().toString();
+            record.createdBy = source.getTextName();
+            record.locked = false;
+            data.tournaments.put(normalized, record);
+            saveTournamentData(source.getServer(), data);
+
+            source.sendSuccess(() -> Component.literal("Tournament created: " + tournamentInput), true);
+            sendToDiscord("SERVER", "Tournament created: " + tournamentInput + " (by " + source.getTextName() + ")");
+            return 1;
+        }
+
+        private static int handleRegisterTeamForTournament(CommandSourceStack source, String rawName) {
+            ServerPlayer player = source.getPlayer();
+            if (player == null) {
+                source.sendFailure(Component.literal("Only players can use this command."));
+                return 0;
+            }
+
+            String tournamentInput = cleanTournamentInput(rawName);
+            String validationError = validateTournamentName(tournamentInput);
+            if (validationError != null) {
+                source.sendFailure(Component.literal(validationError));
+                return 0;
+            }
+            String normalized = normalizeTournamentName(tournamentInput);
+
+            TournamentData data = loadTournamentData(source.getServer());
+            TournamentRecord record = data.tournaments.get(normalized);
+            if (record == null) {
+                source.sendFailure(Component.literal("Tournament not found: " + tournamentInput));
+                return 0;
+            }
+            if (record.locked) {
+                source.sendFailure(Component.literal("Tournament is locked. Team registrations can no longer be edited."));
+                return 0;
+            }
+
+            TeamSnapshot currentTeam;
+            try {
+                currentTeam = CobblemonReflection.extractTeamSnapshot(player);
+            } catch (CobblemonReflection.CobblemonUnavailableException unavailable) {
+                source.sendFailure(Component.literal(unavailable.getMessage()));
+                return 0;
+            } catch (Exception ex) {
+                LOGGER.warn("Failed to read Cobblemon team for tournament registration", ex);
+                source.sendFailure(Component.literal("Failed to read your Cobblemon team. Check server logs."));
+                return 0;
+            }
+
+            TournamentRegistration registration = new TournamentRegistration();
+            registration.playerUuid = player.getUUID().toString();
+            registration.playerNameAtRegistration = player.getGameProfile().getName();
+            registration.registeredAt = Instant.now().toString();
+            registration.team = currentTeam;
+
+            record.registrations.put(player.getUUID().toString(), registration);
+            saveTournamentData(source.getServer(), data);
+
+            source.sendSuccess(
+                    () -> Component.literal("Registered your current team for tournament: " + record.displayName + ". Re-running this command replaces your saved team until lock."),
+                    false
+            );
+            sendToDiscord("SERVER", player.getGameProfile().getName() + " registered a team for tournament " + record.displayName + ".");
+            return 1;
+        }
+
+        private static int handleLockTournament(CommandSourceStack source, String rawName) {
+            String tournamentInput = cleanTournamentInput(rawName);
+            String validationError = validateTournamentName(tournamentInput);
+            if (validationError != null) {
+                source.sendFailure(Component.literal(validationError));
+                return 0;
+            }
+            String normalized = normalizeTournamentName(tournamentInput);
+
+            TournamentData data = loadTournamentData(source.getServer());
+            TournamentRecord record = data.tournaments.get(normalized);
+            if (record == null) {
+                source.sendFailure(Component.literal("Tournament not found: " + tournamentInput));
+                return 0;
+            }
+            if (record.locked) {
+                source.sendFailure(Component.literal("Tournament is already locked."));
+                return 0;
+            }
+
+            record.locked = true;
+            saveTournamentData(source.getServer(), data);
+
+            source.sendSuccess(() -> Component.literal("Tournament locked: " + record.displayName), true);
+            sendToDiscord("SERVER", "Tournament locked: " + record.displayName + " (teams are now final).");
+            return 1;
+        }
+
+        private static int handleCheckTournamentTeam(CommandSourceStack source, String rawTournament, String playerName) {
+            String tournamentInput = cleanTournamentInput(rawTournament);
+            String validationError = validateTournamentName(tournamentInput);
+            if (validationError != null) {
+                source.sendFailure(Component.literal(validationError));
+                return 0;
+            }
+            String normalized = normalizeTournamentName(tournamentInput);
+
+            TournamentData data = loadTournamentData(source.getServer());
+            TournamentRecord record = data.tournaments.get(normalized);
+            if (record == null) {
+                source.sendFailure(Component.literal("Tournament not found: " + tournamentInput));
+                return 0;
+            }
+
+            ServerPlayer target = source.getServer().getPlayerList().getPlayerByName(playerName);
+            if (target == null) {
+                source.sendFailure(Component.literal("Player is not online: " + playerName));
+                return 0;
+            }
+
+            TournamentRegistration registration = record.registrations.get(target.getUUID().toString());
+            if (registration == null) {
+                source.sendFailure(Component.literal(target.getGameProfile().getName() + " is not registered for tournament " + record.displayName + "."));
+                return 0;
+            }
+
+            TeamSnapshot liveTeam;
+            try {
+                liveTeam = CobblemonReflection.extractTeamSnapshot(target);
+            } catch (CobblemonReflection.CobblemonUnavailableException unavailable) {
+                source.sendFailure(Component.literal(unavailable.getMessage()));
+                return 0;
+            } catch (Exception ex) {
+                LOGGER.warn("Failed to read Cobblemon team for check command", ex);
+                source.sendFailure(Component.literal("Failed to read target team. Check server logs."));
+                return 0;
+            }
+
+            if (!registration.team.matches(liveTeam)) {
+                source.sendFailure(Component.literal(target.getGameProfile().getName() + " failed team check for " + record.displayName + ". Their current team differs from the registered team."));
+                return 0;
+            }
+
+            String passMessage = target.getGameProfile().getName() + " passed the team check for the " + record.displayName + " tournament.";
+            source.getServer().getPlayerList().broadcastSystemMessage(Component.literal(passMessage), false);
+            sendToDiscord("SERVER", passMessage);
+            return 1;
+        }
+
+        private static int handleUnregisterTeam(CommandSourceStack source, String rawName) {
+            ServerPlayer player = source.getPlayer();
+            if (player == null) {
+                source.sendFailure(Component.literal("Only players can use this command."));
+                return 0;
+            }
+
+            String tournamentInput = cleanTournamentInput(rawName);
+            String validationError = validateTournamentName(tournamentInput);
+            if (validationError != null) {
+                source.sendFailure(Component.literal(validationError));
+                return 0;
+            }
+            String normalized = normalizeTournamentName(tournamentInput);
+
+            TournamentData data = loadTournamentData(source.getServer());
+            TournamentRecord record = data.tournaments.get(normalized);
+            if (record == null) {
+                source.sendFailure(Component.literal("Tournament not found: " + tournamentInput));
+                return 0;
+            }
+            if (record.locked) {
+                source.sendFailure(Component.literal("Tournament is locked. Team registrations can no longer be edited."));
+                return 0;
+            }
+
+            TournamentRegistration removed = record.registrations.remove(player.getUUID().toString());
+            if (removed == null) {
+                source.sendFailure(Component.literal("You are not registered for tournament " + record.displayName + "."));
+                return 0;
+            }
+
+            saveTournamentData(source.getServer(), data);
+            source.sendSuccess(() -> Component.literal("Removed your registration for tournament " + record.displayName + "."), false);
+            sendToDiscord("SERVER", player.getGameProfile().getName() + " removed their registration for tournament " + record.displayName + ".");
+            return 1;
+        }
+
+        private static int handleListTournaments(CommandSourceStack source) {
+            TournamentData data = loadTournamentData(source.getServer());
+            if (data.tournaments.isEmpty()) {
+                source.sendSuccess(() -> Component.literal("No tournaments registered yet."), false);
+                return 1;
+            }
+
+            List<TournamentRecord> records = new ArrayList<>(data.tournaments.values());
+            records.sort(Comparator.comparing(record -> record.displayName.toLowerCase(Locale.ROOT)));
+
+            source.sendSuccess(() -> Component.literal("Tournaments:"), false);
+            for (TournamentRecord record : records) {
+                String status = record.locked ? "LOCKED" : "OPEN";
+                int count = record.registrations.size();
+                source.sendSuccess(() -> Component.literal("- " + record.displayName + " [" + status + "] registrations=" + count), false);
+            }
+            return 1;
+        }
+
+        private static int handleTournamentInfo(CommandSourceStack source, String rawName) {
+            String tournamentInput = cleanTournamentInput(rawName);
+            String validationError = validateTournamentName(tournamentInput);
+            if (validationError != null) {
+                source.sendFailure(Component.literal(validationError));
+                return 0;
+            }
+            String normalized = normalizeTournamentName(tournamentInput);
+
+            TournamentData data = loadTournamentData(source.getServer());
+            TournamentRecord record = data.tournaments.get(normalized);
+            if (record == null) {
+                source.sendFailure(Component.literal("Tournament not found: " + tournamentInput));
+                return 0;
+            }
+
+            source.sendSuccess(() -> Component.literal("Tournament: " + record.displayName), false);
+            source.sendSuccess(() -> Component.literal("Status: " + (record.locked ? "LOCKED" : "OPEN")), false);
+            source.sendSuccess(() -> Component.literal("Created by: " + valueOrUnknown(record.createdBy)), false);
+            source.sendSuccess(() -> Component.literal("Created at: " + valueOrUnknown(record.createdAt)), false);
+            source.sendSuccess(() -> Component.literal("Registrations: " + record.registrations.size()), false);
+
+            List<TournamentRegistration> regs = new ArrayList<>(record.registrations.values());
+            regs.sort(Comparator.comparing(reg -> valueOrUnknown(reg.playerNameAtRegistration).toLowerCase(Locale.ROOT)));
+            for (TournamentRegistration reg : regs) {
+                String playerName = valueOrUnknown(reg.playerNameAtRegistration);
+                String registeredAt = valueOrUnknown(reg.registeredAt);
+                source.sendSuccess(() -> Component.literal("- " + playerName + " (registered: " + registeredAt + ")"), false);
+            }
+            return 1;
+        }
+
+        private static int handleExportTournament(CommandSourceStack source, String rawName) {
+            String tournamentInput = cleanTournamentInput(rawName);
+            String validationError = validateTournamentName(tournamentInput);
+            if (validationError != null) {
+                source.sendFailure(Component.literal(validationError));
+                return 0;
+            }
+            String normalized = normalizeTournamentName(tournamentInput);
+
+            TournamentData data = loadTournamentData(source.getServer());
+            TournamentRecord record = data.tournaments.get(normalized);
+            if (record == null) {
+                source.sendFailure(Component.literal("Tournament not found: " + tournamentInput));
+                return 0;
+            }
+
+            try {
+                Path configDir = source.getServer().getServerDirectory().resolve("config");
+                Path exportDir = configDir.resolve("discordlink-exports");
+                Files.createDirectories(exportDir);
+
+                String timestamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                        .withZone(ZoneOffset.UTC)
+                        .format(Instant.now());
+                String safeName = normalized.replace(' ', '_');
+                Path output = exportDir.resolve(safeName + "-" + timestamp + ".txt");
+
+                List<String> lines = new ArrayList<>();
+                lines.add("Tournament Export");
+                lines.add("Name: " + record.displayName);
+                lines.add("Status: " + (record.locked ? "LOCKED" : "OPEN"));
+                lines.add("Created by: " + valueOrUnknown(record.createdBy));
+                lines.add("Created at: " + valueOrUnknown(record.createdAt));
+                lines.add("Registrations: " + record.registrations.size());
+                lines.add("");
+
+                List<TournamentRegistration> regs = new ArrayList<>(record.registrations.values());
+                regs.sort(Comparator.comparing(reg -> valueOrUnknown(reg.playerNameAtRegistration).toLowerCase(Locale.ROOT)));
+                for (TournamentRegistration reg : regs) {
+                    lines.add("Player: " + valueOrUnknown(reg.playerNameAtRegistration));
+                    lines.add("UUID: " + valueOrUnknown(reg.playerUuid));
+                    lines.add("Registered at: " + valueOrUnknown(reg.registeredAt));
+                    lines.add("Team:");
+                    lines.addAll(formatTeamForExport(reg.team));
+                    lines.add("");
+                }
+
+                Files.write(output, lines);
+                source.sendSuccess(() -> Component.literal("Tournament exported to " + output.toAbsolutePath()), false);
+                return 1;
+            } catch (Exception ex) {
+                LOGGER.warn("Failed to export tournament", ex);
+                source.sendFailure(Component.literal("Failed to export tournament. Check server logs."));
+                return 0;
+            }
+        }
+
+        private static List<String> formatTeamForExport(TeamSnapshot team) {
+            List<String> lines = new ArrayList<>();
+            if (team == null || team.pokemon.isEmpty()) {
+                lines.add("  - No Pokemon");
+                return lines;
+            }
+
+            int index = 1;
+            for (PokemonSnapshot pokemon : team.pokemon) {
+                lines.add("  " + index + ") " + valueOrUnknown(pokemon.displayName));
+                lines.add("     Species: " + valueOrUnknown(pokemon.species));
+                lines.add("     Ability: " + valueOrUnknown(pokemon.ability));
+                lines.add("     Held Item: " + valueOrUnknown(pokemon.heldItem));
+                lines.add("     Nature: " + valueOrUnknown(pokemon.nature));
+                lines.add("     Gender: " + valueOrUnknown(pokemon.gender));
+                lines.add("     Form: " + valueOrUnknown(pokemon.form));
+                lines.add("     IVs: " + valueOrUnknown(pokemon.ivSpread));
+                lines.add("     EVs: " + valueOrUnknown(pokemon.evSpread));
+                lines.add("     Moves: " + String.join(", ", pokemon.moves));
+                index++;
+            }
+            return lines;
         }
 
         private static void sendToDiscord(String player, String message) {
@@ -147,6 +564,84 @@ public class DiscordLinkMod {
                     .replace("\r", "\\r")
                     .replace("\t", "\\t");
         }
+    }
+
+    private static String validateTournamentName(String name) {
+        if (name == null || name.isBlank()) {
+            return "Tournament name cannot be empty.";
+        }
+        if (!TOURNAMENT_NAME_PATTERN.matcher(name).matches()) {
+            return "Tournament name must be 1-40 chars and only use letters, numbers, spaces, '-' or '_'.";
+        }
+        return null;
+    }
+
+    private static String cleanTournamentInput(String raw) {
+        if (raw == null) {
+            return "";
+        }
+
+        String trimmed = raw.trim();
+        if (trimmed.length() >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+            trimmed = trimmed.substring(1, trimmed.length() - 1).trim();
+        }
+        return trimmed;
+    }
+
+    private static String normalizeTournamentName(String name) {
+        return name.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+    }
+
+    private static String valueOrUnknown(String input) {
+        if (input == null || input.isBlank()) {
+            return "Unknown";
+        }
+        return input;
+    }
+
+    private static synchronized TournamentData loadTournamentData(net.minecraft.server.MinecraftServer server) {
+        Path path = getTournamentDataPath(server);
+
+        try {
+            if (!Files.exists(path)) {
+                return new TournamentData();
+            }
+
+            String json = Files.readString(path);
+            TournamentData parsed = GSON.fromJson(json, TOURNAMENT_DATA_TYPE);
+            if (parsed == null) {
+                return new TournamentData();
+            }
+            if (parsed.tournaments == null) {
+                parsed.tournaments = new HashMap<>();
+            }
+            for (TournamentRecord record : parsed.tournaments.values()) {
+                if (record.registrations == null) {
+                    record.registrations = new HashMap<>();
+                }
+            }
+            return parsed;
+        } catch (Exception e) {
+            LOGGER.error("Failed to read tournament data. Using empty state.", e);
+            return new TournamentData();
+        }
+    }
+
+    private static synchronized void saveTournamentData(net.minecraft.server.MinecraftServer server, TournamentData data) {
+        Path path = getTournamentDataPath(server);
+
+        try {
+            Files.createDirectories(path.getParent());
+            Path temp = path.resolveSibling(path.getFileName().toString() + ".tmp");
+            Files.writeString(temp, GSON.toJson(data));
+            Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception e) {
+            LOGGER.error("Failed to save tournament data", e);
+        }
+    }
+
+    private static Path getTournamentDataPath(net.minecraft.server.MinecraftServer server) {
+        return server.getServerDirectory().resolve("config").resolve("discordlink-tournaments.json");
     }
 
     private static String resolveBridgeSecret() {
@@ -236,31 +731,145 @@ public class DiscordLinkMod {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
+    private static class TournamentData {
+        Map<String, TournamentRecord> tournaments = new HashMap<>();
+    }
+
+    private static class TournamentRecord {
+        String displayName;
+        String createdAt;
+        String createdBy;
+        boolean locked;
+        Map<String, TournamentRegistration> registrations = new HashMap<>();
+    }
+
+    private static class TournamentRegistration {
+        String playerUuid;
+        String playerNameAtRegistration;
+        String registeredAt;
+        TeamSnapshot team;
+    }
+
+    private static class TeamSnapshot {
+        List<PokemonSnapshot> pokemon = new ArrayList<>();
+
+        boolean matches(TeamSnapshot other) {
+            if (other == null) {
+                return false;
+            }
+
+            List<String> left = canonicalPokemonKeys(this.pokemon);
+            List<String> right = canonicalPokemonKeys(other.pokemon);
+            return left.equals(right);
+        }
+
+        private static List<String> canonicalPokemonKeys(List<PokemonSnapshot> list) {
+            List<String> keys = new ArrayList<>();
+            if (list == null) {
+                return keys;
+            }
+
+            for (PokemonSnapshot pokemon : list) {
+                if (pokemon != null) {
+                    keys.add(pokemon.canonicalKey());
+                }
+            }
+            keys.sort(String::compareTo);
+            return keys;
+        }
+    }
+
+    private static class PokemonSnapshot {
+        String displayName;
+        String species;
+        String ability;
+        String heldItem;
+        List<String> moves = new ArrayList<>();
+        String nature;
+        String gender;
+        String form;
+        String ivSpread;
+        String evSpread;
+        boolean shiny;
+
+        String canonicalKey() {
+            List<String> normalizedMoves = new ArrayList<>();
+            for (String move : moves) {
+                normalizedMoves.add(normalizeValue(move));
+            }
+            normalizedMoves.sort(String::compareTo);
+
+            return String.join("|",
+                    "species=" + normalizeValue(species),
+                    "ability=" + normalizeValue(ability),
+                    "item=" + normalizeValue(heldItem),
+                    "nature=" + normalizeValue(nature),
+                    "gender=" + normalizeValue(gender),
+                    "form=" + normalizeValue(form),
+                    "ivs=" + normalizeValue(ivSpread),
+                    "evs=" + normalizeValue(evSpread),
+                    "moves=" + String.join(",", normalizedMoves)
+            );
+        }
+
+        private static String normalizeValue(String value) {
+            if (value == null) {
+                return "";
+            }
+            return value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        }
+    }
+
     private static class CobblemonReflection {
         private static final String COBBLEMON_CLASS = "com.cobblemon.mod.common.Cobblemon";
 
         static String buildTeamReport(ServerPlayer player) {
+            TeamSnapshot team = extractTeamSnapshot(player);
+            if (team.pokemon.isEmpty()) {
+                return "Team registration: no Pokemon found in current party.";
+            }
+
+            StringBuilder out = new StringBuilder("Team registration:\n");
+            int index = 1;
+            for (PokemonSnapshot pokemon : team.pokemon) {
+                out.append(index).append(") ").append(valueOrUnknown(pokemon.displayName)).append("\n");
+                out.append("- Ability: ").append(valueOrUnknown(pokemon.ability)).append("\n");
+                out.append("- Held Item: ").append(valueOrUnknown(pokemon.heldItem)).append("\n");
+                out.append("- Moves: ").append(String.join(", ", pokemon.moves)).append("\n");
+                index++;
+            }
+
+            return out.toString().trim();
+        }
+
+        static TeamSnapshot extractTeamSnapshot(ServerPlayer player) {
             Object partyStore = resolvePartyStore(player);
             if (partyStore == null) {
                 throw new CobblemonUnavailableException("Cobblemon is installed but no player party could be found.");
             }
 
             List<Object> pokemonList = toList(partyStore);
-            if (pokemonList.isEmpty()) {
-                return "Team registration: no Pokemon found in current party.";
-            }
-
-            StringBuilder out = new StringBuilder("Team registration:\n");
-            int index = 1;
+            TeamSnapshot snapshot = new TeamSnapshot();
             for (Object pokemon : pokemonList) {
-                out.append(index).append(") ").append(extractPokemonName(pokemon)).append("\n");
-                out.append("- Ability: ").append(extractAbilityName(pokemon)).append("\n");
-                out.append("- Held Item: ").append(extractHeldItemName(pokemon)).append("\n");
-                out.append("- Moves: ").append(String.join(", ", extractMoves(pokemon))).append("\n");
-                index++;
+                snapshot.pokemon.add(extractPokemonSnapshot(pokemon));
             }
+            return snapshot;
+        }
 
-            return out.toString().trim();
+        private static PokemonSnapshot extractPokemonSnapshot(Object pokemon) {
+            PokemonSnapshot snapshot = new PokemonSnapshot();
+            snapshot.displayName = extractPokemonName(pokemon);
+            snapshot.species = extractSpeciesName(pokemon);
+            snapshot.ability = extractAbilityName(pokemon);
+            snapshot.heldItem = extractHeldItemName(pokemon);
+            snapshot.moves = extractMoves(pokemon);
+            snapshot.nature = extractNatureName(pokemon);
+            snapshot.gender = extractGenderName(pokemon);
+            snapshot.form = extractFormName(pokemon);
+            snapshot.ivSpread = extractIvSpread(pokemon);
+            snapshot.evSpread = extractEvSpread(pokemon);
+            snapshot.shiny = extractShiny(pokemon);
+            return snapshot;
         }
 
         private static Object resolvePartyStore(ServerPlayer player) {
@@ -298,11 +907,21 @@ public class DiscordLinkMod {
                 }
             }
 
+            return extractSpeciesName(pokemon);
+        }
+
+        private static String extractSpeciesName(Object pokemon) {
             Object species = invokeMatching(pokemon, "getSpecies");
             if (species != null) {
                 String speciesName = invokeString(species, "getName");
                 if (speciesName != null && !speciesName.isBlank()) {
                     return speciesName;
+                }
+
+                Object translated = invokeMatching(species, "translatedName");
+                String translatedString = translated != null ? invokeString(translated, "getString") : null;
+                if (translatedString != null && !translatedString.isBlank()) {
+                    return translatedString;
                 }
             }
 
@@ -378,6 +997,169 @@ public class DiscordLinkMod {
             }
 
             return names;
+        }
+
+        private static String extractNatureName(Object pokemon) {
+            Object nature = invokeMatching(pokemon, "getNature");
+            if (nature == null) {
+                return "Unknown";
+            }
+
+            String name = invokeString(nature, "getName");
+            if (name != null && !name.isBlank()) {
+                return name;
+            }
+
+            return sanitizeToString(nature);
+        }
+
+        private static String extractGenderName(Object pokemon) {
+            Object gender = invokeMatching(pokemon, "getGender");
+            if (gender == null) {
+                return "Unknown";
+            }
+
+            String name = invokeString(gender, "name");
+            if (name != null && !name.isBlank()) {
+                return name;
+            }
+
+            return sanitizeToString(gender);
+        }
+
+        private static String extractFormName(Object pokemon) {
+            Object form = invokeMatching(pokemon, "getForm");
+            if (form != null) {
+                String name = invokeString(form, "getName");
+                if (name != null && !name.isBlank()) {
+                    return name;
+                }
+                return sanitizeToString(form);
+            }
+
+            Object formName = invokeMatching(pokemon, "getFormName");
+            if (formName instanceof String s && !s.isBlank()) {
+                return s;
+            }
+
+            Object aspects = invokeMatching(pokemon, "getAspects");
+            List<Object> aspectList = toList(aspects);
+            if (!aspectList.isEmpty()) {
+                List<String> names = new ArrayList<>();
+                for (Object aspect : aspectList) {
+                    String name = sanitizeToString(aspect);
+                    if (!name.isBlank()) {
+                        names.add(name);
+                    }
+                }
+                if (!names.isEmpty()) {
+                    names.sort(String::compareTo);
+                    return String.join(",", names);
+                }
+            }
+
+            return "Default";
+        }
+
+        private static String extractIvSpread(Object pokemon) {
+            Object ivs = invokeMatching(pokemon, "getIvs");
+            if (ivs == null) {
+                ivs = invokeMatching(pokemon, "getIVs");
+            }
+            return extractStatSpread(ivs);
+        }
+
+        private static String extractEvSpread(Object pokemon) {
+            Object evs = invokeMatching(pokemon, "getEvs");
+            if (evs == null) {
+                evs = invokeMatching(pokemon, "getEVs");
+            }
+            return extractStatSpread(evs);
+        }
+
+        private static boolean extractShiny(Object pokemon) {
+            Object shiny = invokeMatching(pokemon, "getShiny");
+            if (shiny == null) {
+                shiny = invokeMatching(pokemon, "isShiny");
+            }
+            return shiny instanceof Boolean b && b;
+        }
+
+        private static String extractStatSpread(Object spread) {
+            if (spread == null) {
+                return "unknown";
+            }
+
+            Map<String, String> values = new HashMap<>();
+            tryAddStat(values, spread, "hp", "getHp", "getHP", "hp");
+            tryAddStat(values, spread, "atk", "getAttack", "getAtk", "attack", "atk");
+            tryAddStat(values, spread, "def", "getDefense", "getDef", "defense", "def");
+            tryAddStat(values, spread, "spa", "getSpecialAttack", "getSpAttack", "getSpAtk", "specialAttack", "spAttack");
+            tryAddStat(values, spread, "spd", "getSpecialDefense", "getSpDefense", "getSpDef", "specialDefense", "spDefense");
+            tryAddStat(values, spread, "spe", "getSpeed", "getSpe", "speed", "spe");
+
+            if (values.size() == 6) {
+                return "hp=" + values.get("hp")
+                        + ";atk=" + values.get("atk")
+                        + ";def=" + values.get("def")
+                        + ";spa=" + values.get("spa")
+                        + ";spd=" + values.get("spd")
+                        + ";spe=" + values.get("spe");
+            }
+
+            if (spread instanceof Map<?, ?> map) {
+                List<String> entries = new ArrayList<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    String key = normalizeStatKey(entry.getKey());
+                    String value = normalizeStatValue(entry.getValue());
+                    entries.add(key + "=" + value);
+                }
+                entries.sort(String::compareTo);
+                if (!entries.isEmpty()) {
+                    return String.join(";", entries);
+                }
+            }
+
+            String fallback = sanitizeToString(spread);
+            return fallback.isBlank() ? "unknown" : fallback;
+        }
+
+        private static void tryAddStat(Map<String, String> out, Object spread, String key, String... methodNames) {
+            for (String methodName : methodNames) {
+                Object value = invokeMatching(spread, methodName);
+                if (value != null) {
+                    out.put(key, normalizeStatValue(value));
+                    return;
+                }
+            }
+        }
+
+        private static String normalizeStatValue(Object value) {
+            if (value == null) {
+                return "0";
+            }
+            if (value instanceof Number number) {
+                return String.valueOf(number.intValue());
+            }
+            return sanitizeToString(value);
+        }
+
+        private static String normalizeStatKey(Object key) {
+            String normalized = sanitizeToString(key).toLowerCase(Locale.ROOT);
+            if (normalized.contains("special") && normalized.contains("attack")) return "spa";
+            if (normalized.contains("special") && normalized.contains("def")) return "spd";
+            if (normalized.startsWith("hp")) return "hp";
+            if (normalized.startsWith("atk") || normalized.contains("attack")) return "atk";
+            if (normalized.startsWith("def") || normalized.contains("defense")) return "def";
+            if (normalized.startsWith("spe") || normalized.contains("speed")) return "spe";
+            return normalized;
+        }
+
+        private static String sanitizeToString(Object value) {
+            if (value == null) {
+                return "";
+            }
+            return value.toString().trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
         }
 
         private static Object getCobblemonSingleton() {
@@ -527,4 +1309,3 @@ public class DiscordLinkMod {
         }
     }
 }
-
