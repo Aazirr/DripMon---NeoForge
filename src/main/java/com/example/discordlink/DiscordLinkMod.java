@@ -502,7 +502,15 @@ public class DiscordLinkMod {
                 }
 
                 Files.write(output, lines);
+                TournamentExportPayload payload = buildTournamentExportPayload(record);
+                String botPage = sendTournamentExportToBot(payload);
+
                 source.sendSuccess(() -> Component.literal("Tournament exported to " + output.toAbsolutePath()), false);
+                if (botPage != null && !botPage.isBlank()) {
+                    source.sendSuccess(() -> Component.literal("Tournament web page: " + botPage), false);
+                } else {
+                    source.sendSuccess(() -> Component.literal("Tournament exported locally, but bot page URL was not returned."), false);
+                }
                 return 1;
             } catch (Exception ex) {
                 LOGGER.warn("Failed to export tournament", ex);
@@ -533,6 +541,72 @@ public class DiscordLinkMod {
                 index++;
             }
             return lines;
+        }
+
+        private static TournamentExportPayload buildTournamentExportPayload(TournamentRecord record) {
+            TournamentExportPayload payload = new TournamentExportPayload();
+            payload.tournamentName = record.displayName;
+            payload.status = record.locked ? "LOCKED" : "OPEN";
+            payload.createdBy = valueOrUnknown(record.createdBy);
+            payload.createdAt = valueOrUnknown(record.createdAt);
+            payload.exportedAt = Instant.now().toString();
+
+            List<TournamentRegistration> regs = new ArrayList<>(record.registrations.values());
+            regs.sort(Comparator.comparing(reg -> valueOrUnknown(reg.playerNameAtRegistration).toLowerCase(Locale.ROOT)));
+            for (TournamentRegistration reg : regs) {
+                ExportPlayer player = new ExportPlayer();
+                player.playerUuid = valueOrUnknown(reg.playerUuid);
+                player.playerName = valueOrUnknown(reg.playerNameAtRegistration);
+                player.registeredAt = valueOrUnknown(reg.registeredAt);
+
+                TeamSnapshot team = reg.team != null ? reg.team : new TeamSnapshot();
+                for (PokemonSnapshot pokemon : team.pokemon) {
+                    ExportPokemon out = new ExportPokemon();
+                    out.displayName = valueOrUnknown(pokemon.displayName);
+                    out.species = valueOrUnknown(pokemon.species);
+                    out.ability = valueOrUnknown(pokemon.ability);
+                    out.heldItem = valueOrUnknown(pokemon.heldItem);
+                    out.nature = valueOrUnknown(pokemon.nature);
+                    out.gender = valueOrUnknown(pokemon.gender);
+                    out.form = valueOrUnknown(pokemon.form);
+                    out.ivSpread = valueOrUnknown(pokemon.ivSpread);
+                    out.evSpread = valueOrUnknown(pokemon.evSpread);
+                    out.moves = pokemon.moves != null ? new ArrayList<>(pokemon.moves) : List.of();
+                    player.team.add(out);
+                }
+
+                payload.players.add(player);
+            }
+
+            return payload;
+        }
+
+        private static String sendTournamentExportToBot(TournamentExportPayload payload) {
+            try {
+                String body = GSON.toJson(payload);
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(BOT_BASE_URL + "/mc/tournament-export"))
+                        .header("Content-Type", "application/json")
+                        .header("X-DiscordLink-Secret", getCurrentBridgeSecret())
+                        .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build();
+
+                HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() >= 400) {
+                    LOGGER.warn("Tournament export endpoint returned status {}: {}", response.statusCode(), response.body());
+                    return null;
+                }
+
+                Map<?, ?> parsed = GSON.fromJson(response.body(), Map.class);
+                Object publicUrl = parsed != null ? parsed.get("publicUrl") : null;
+                if (publicUrl instanceof String s && !s.isBlank()) {
+                    return BOT_BASE_URL + s;
+                }
+                return null;
+            } catch (Exception ex) {
+                LOGGER.warn("Failed to push tournament export to bot", ex);
+                return null;
+            }
         }
 
         private static void sendToDiscord(String player, String message) {
@@ -748,6 +822,35 @@ public class DiscordLinkMod {
         String playerNameAtRegistration;
         String registeredAt;
         TeamSnapshot team;
+    }
+
+    private static class TournamentExportPayload {
+        String tournamentName;
+        String status;
+        String createdBy;
+        String createdAt;
+        String exportedAt;
+        List<ExportPlayer> players = new ArrayList<>();
+    }
+
+    private static class ExportPlayer {
+        String playerUuid;
+        String playerName;
+        String registeredAt;
+        List<ExportPokemon> team = new ArrayList<>();
+    }
+
+    private static class ExportPokemon {
+        String displayName;
+        String species;
+        String ability;
+        String heldItem;
+        String nature;
+        String gender;
+        String form;
+        String ivSpread;
+        String evSpread;
+        List<String> moves = new ArrayList<>();
     }
 
     private static class TeamSnapshot {
@@ -1098,6 +1201,13 @@ public class DiscordLinkMod {
             tryAddStat(values, spread, "spd", "getSpecialDefense", "getSpDefense", "getSpDef", "specialDefense", "spDefense");
             tryAddStat(values, spread, "spe", "getSpeed", "getSpe", "speed", "spe");
 
+            tryAddStatFromField(values, spread, "hp", "hp");
+            tryAddStatFromField(values, spread, "atk", "attack", "atk");
+            tryAddStatFromField(values, spread, "def", "defense", "def");
+            tryAddStatFromField(values, spread, "spa", "specialAttack", "spAttack", "spa");
+            tryAddStatFromField(values, spread, "spd", "specialDefense", "spDefense", "spd");
+            tryAddStatFromField(values, spread, "spe", "speed", "spe");
+
             if (values.size() == 6) {
                 return "hp=" + values.get("hp")
                         + ";atk=" + values.get("atk")
@@ -1131,6 +1241,36 @@ public class DiscordLinkMod {
                     out.put(key, normalizeStatValue(value));
                     return;
                 }
+            }
+        }
+
+        private static void tryAddStatFromField(Map<String, String> out, Object spread, String key, String... fieldNames) {
+            if (out.containsKey(key) || spread == null) {
+                return;
+            }
+
+            Class<?> type = spread.getClass();
+            while (type != null) {
+                Field[] fields = type.getDeclaredFields();
+                for (Field field : fields) {
+                    String fieldName = field.getName();
+                    for (String candidate : fieldNames) {
+                        if (!fieldName.equalsIgnoreCase(candidate)) {
+                            continue;
+                        }
+                        try {
+                            field.setAccessible(true);
+                            Object value = field.get(spread);
+                            if (value != null) {
+                                out.put(key, normalizeStatValue(value));
+                                return;
+                            }
+                        } catch (Exception ignored) {
+                            // Try next field.
+                        }
+                    }
+                }
+                type = type.getSuperclass();
             }
         }
 
