@@ -1111,6 +1111,11 @@ public class DiscordLinkMod {
                 return "Unknown";
             }
 
+            Object displayField = readFieldValue(nature, "displayName");
+            if (displayField instanceof String display && !display.isBlank()) {
+                return display.trim();
+            }
+
             Object displayName = invokeMatching(nature, "getDisplayName");
             if (displayName != null) {
                 String displayString = invokeString(displayName, "getString");
@@ -1121,12 +1126,20 @@ public class DiscordLinkMod {
 
             String name = invokeString(nature, "getName");
             if (name != null && !name.isBlank()) {
-                return prettifyToken(name);
+                return formatNatureName(name);
+            }
+
+            Object nameField = readFieldValue(nature, "name");
+            if (nameField != null) {
+                String value = nameField.toString();
+                if (!value.isBlank()) {
+                    return formatNatureName(value);
+                }
             }
 
             String enumName = invokeString(nature, "name");
             if (enumName != null && !enumName.isBlank()) {
-                return prettifyToken(enumName);
+                return formatNatureName(enumName);
             }
 
             String fallback = sanitizeToString(nature);
@@ -1227,6 +1240,7 @@ public class DiscordLinkMod {
             tryAddStatFromField(values, spread, "spa", "specialAttack", "spAttack", "spa");
             tryAddStatFromField(values, spread, "spd", "specialDefense", "spDefense", "spd");
             tryAddStatFromField(values, spread, "spe", "speed", "spe");
+            tryAddStatsFromIterable(values, spread);
             tryAddStatsFromMapPayload(values, spread);
             tryAddStatsFromArrayPayload(values, spread);
             tryAddStatsUsingStatConstants(values, spread);
@@ -1318,6 +1332,23 @@ public class DiscordLinkMod {
                     String key = normalizeStatKey(entry.getKey());
                     if (isValidStatKey(key)) {
                         out.putIfAbsent(key, normalizeStatValue(entry.getValue()));
+                    }
+                }
+            }
+        }
+
+        private static void tryAddStatsFromIterable(Map<String, String> out, Object spread) {
+            if (out.size() >= 6 || spread == null) {
+                return;
+            }
+
+            if (spread instanceof Iterable<?> iterable) {
+                for (Object item : iterable) {
+                    if (item instanceof Map.Entry<?, ?> entry) {
+                        String key = normalizeStatKey(entry.getKey());
+                        if (isValidStatKey(key)) {
+                            out.putIfAbsent(key, normalizeStatValue(entry.getValue()));
+                        }
                     }
                 }
             }
@@ -1427,6 +1458,26 @@ public class DiscordLinkMod {
             return null;
         }
 
+        private static Object readFieldValue(Object target, String fieldName) {
+            if (target == null || fieldName == null || fieldName.isBlank()) {
+                return null;
+            }
+
+            Class<?> type = target.getClass();
+            while (type != null) {
+                try {
+                    Field field = type.getDeclaredField(fieldName);
+                    field.setAccessible(true);
+                    return field.get(target);
+                } catch (Exception ignored) {
+                    // Try parent class.
+                }
+                type = type.getSuperclass();
+            }
+
+            return null;
+        }
+
         private static void tryInvokeSpreadGetter(Map<String, String> out, Object spread, String key, Object statConstant) {
             if (out.containsKey(key) || spread == null || statConstant == null) {
                 return;
@@ -1521,6 +1572,21 @@ public class DiscordLinkMod {
             }
 
             return out.toString().trim();
+        }
+
+        private static String formatNatureName(String raw) {
+            if (raw == null || raw.isBlank()) {
+                return "Unknown";
+            }
+
+            String normalized = raw.trim();
+            int colon = normalized.lastIndexOf(':');
+            if (colon >= 0 && colon + 1 < normalized.length()) {
+                normalized = normalized.substring(colon + 1);
+            }
+
+            normalized = normalized.replace(".", " ");
+            return prettifyToken(normalized);
         }
 
         private static String normalizeStatKey(Object key) {
