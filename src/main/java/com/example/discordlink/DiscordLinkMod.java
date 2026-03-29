@@ -41,10 +41,12 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -508,6 +510,7 @@ public class DiscordLinkMod {
                 source.sendSuccess(() -> Component.literal("Tournament exported to " + output.toAbsolutePath()), false);
                 if (botPage != null && !botPage.isBlank()) {
                     source.sendSuccess(() -> Component.literal("Tournament web page: " + botPage), false);
+                    sendToDiscord("SERVER", "Tournament page for " + record.displayName + ": " + botPage);
                 } else {
                     source.sendSuccess(() -> Component.literal("Tournament exported locally, but bot page URL was not returned."), false);
                 }
@@ -1108,12 +1111,29 @@ public class DiscordLinkMod {
                 return "Unknown";
             }
 
-            String name = invokeString(nature, "getName");
-            if (name != null && !name.isBlank()) {
-                return name;
+            Object displayName = invokeMatching(nature, "getDisplayName");
+            if (displayName != null) {
+                String displayString = invokeString(displayName, "getString");
+                if (displayString != null && !displayString.isBlank()) {
+                    return displayString;
+                }
             }
 
-            return sanitizeToString(nature);
+            String name = invokeString(nature, "getName");
+            if (name != null && !name.isBlank()) {
+                return prettifyToken(name);
+            }
+
+            String enumName = invokeString(nature, "name");
+            if (enumName != null && !enumName.isBlank()) {
+                return prettifyToken(enumName);
+            }
+
+            String fallback = sanitizeToString(nature);
+            if (looksLikeObjectIdString(fallback)) {
+                return "Unknown";
+            }
+            return prettifyToken(fallback);
         }
 
         private static String extractGenderName(Object pokemon) {
@@ -1207,6 +1227,9 @@ public class DiscordLinkMod {
             tryAddStatFromField(values, spread, "spa", "specialAttack", "spAttack", "spa");
             tryAddStatFromField(values, spread, "spd", "specialDefense", "spDefense", "spd");
             tryAddStatFromField(values, spread, "spe", "speed", "spe");
+            tryAddStatsFromMapPayload(values, spread);
+            tryAddStatsFromArrayPayload(values, spread);
+            tryAddStatsUsingStatConstants(values, spread);
 
             if (values.size() == 6) {
                 return "hp=" + values.get("hp")
@@ -1231,7 +1254,10 @@ public class DiscordLinkMod {
             }
 
             String fallback = sanitizeToString(spread);
-            return fallback.isBlank() ? "unknown" : fallback;
+            if (fallback.isBlank() || looksLikeObjectIdString(fallback)) {
+                return "unknown";
+            }
+            return fallback;
         }
 
         private static void tryAddStat(Map<String, String> out, Object spread, String key, String... methodNames) {
@@ -1274,6 +1300,166 @@ public class DiscordLinkMod {
             }
         }
 
+        private static void tryAddStatsFromMapPayload(Map<String, String> out, Object spread) {
+            if (out.size() >= 6 || spread == null) {
+                return;
+            }
+
+            Object mapCandidate = invokeMatching(spread, "asMap");
+            if (mapCandidate == null) {
+                mapCandidate = invokeMatching(spread, "toMap");
+            }
+            if (mapCandidate == null) {
+                mapCandidate = invokeMatching(spread, "getStats");
+            }
+
+            if (mapCandidate instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    String key = normalizeStatKey(entry.getKey());
+                    if (isValidStatKey(key)) {
+                        out.putIfAbsent(key, normalizeStatValue(entry.getValue()));
+                    }
+                }
+            }
+        }
+
+        private static void tryAddStatsFromArrayPayload(Map<String, String> out, Object spread) {
+            if (out.size() >= 6 || spread == null) {
+                return;
+            }
+
+            Object valueArray = invokeMatching(spread, "values");
+            if (valueArray == null) {
+                valueArray = invokeMatching(spread, "toArray");
+            }
+
+            if (valueArray != null && valueArray.getClass().isArray()) {
+                int length = Array.getLength(valueArray);
+                if (length >= 6) {
+                    out.putIfAbsent("hp", normalizeStatValue(Array.get(valueArray, 0)));
+                    out.putIfAbsent("atk", normalizeStatValue(Array.get(valueArray, 1)));
+                    out.putIfAbsent("def", normalizeStatValue(Array.get(valueArray, 2)));
+                    out.putIfAbsent("spa", normalizeStatValue(Array.get(valueArray, 3)));
+                    out.putIfAbsent("spd", normalizeStatValue(Array.get(valueArray, 4)));
+                    out.putIfAbsent("spe", normalizeStatValue(Array.get(valueArray, 5)));
+                }
+            }
+        }
+
+        private static void tryAddStatsUsingStatConstants(Map<String, String> out, Object spread) {
+            if (out.size() >= 6 || spread == null) {
+                return;
+            }
+
+            Class<?>[] statContainers = new Class<?>[] {
+                    loadClass("com.cobblemon.mod.common.api.pokemon.stats.Stats"),
+                    loadClass("com.cobblemon.mod.common.pokemon.stats.Stats"),
+                    loadClass("com.cobblemon.mod.common.api.pokemon.stats.Stat"),
+                    loadClass("com.cobblemon.mod.common.pokemon.stats.Stat")
+            };
+
+            for (Class<?> statContainer : statContainers) {
+                if (statContainer == null) {
+                    continue;
+                }
+
+                Object hp = resolveStatConstant(statContainer, "HP");
+                Object atk = resolveStatConstant(statContainer, "ATTACK", "ATK");
+                Object def = resolveStatConstant(statContainer, "DEFENSE", "DEF");
+                Object spa = resolveStatConstant(statContainer, "SPECIAL_ATTACK", "SP_ATTACK", "SPA");
+                Object spd = resolveStatConstant(statContainer, "SPECIAL_DEFENSE", "SP_DEFENSE", "SPD");
+                Object spe = resolveStatConstant(statContainer, "SPEED", "SPE");
+
+                tryInvokeSpreadGetter(out, spread, "hp", hp);
+                tryInvokeSpreadGetter(out, spread, "atk", atk);
+                tryInvokeSpreadGetter(out, spread, "def", def);
+                tryInvokeSpreadGetter(out, spread, "spa", spa);
+                tryInvokeSpreadGetter(out, spread, "spd", spd);
+                tryInvokeSpreadGetter(out, spread, "spe", spe);
+
+                if (out.size() >= 6) {
+                    return;
+                }
+            }
+        }
+
+        private static Class<?> loadClass(String className) {
+            try {
+                return Class.forName(className);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+
+        private static Object resolveStatConstant(Class<?> type, String... names) {
+            if (type == null) {
+                return null;
+            }
+
+            if (type.isEnum()) {
+                Object[] constants = type.getEnumConstants();
+                if (constants == null) {
+                    return null;
+                }
+                for (Object constant : constants) {
+                    String candidate = sanitizeToString(constant).replace("-", "_").replace(" ", "_");
+                    for (String name : names) {
+                        if (candidate.equals(name.toLowerCase(Locale.ROOT))) {
+                            return constant;
+                        }
+                    }
+                }
+            }
+
+            for (String name : names) {
+                try {
+                    Field field = type.getField(name);
+                    field.setAccessible(true);
+                    Object value = field.get(null);
+                    if (value != null) {
+                        return value;
+                    }
+                } catch (Exception ignored) {
+                    // Try next candidate.
+                }
+            }
+
+            return null;
+        }
+
+        private static void tryInvokeSpreadGetter(Map<String, String> out, Object spread, String key, Object statConstant) {
+            if (out.containsKey(key) || spread == null || statConstant == null) {
+                return;
+            }
+
+            Method[] methods = spread.getClass().getMethods();
+            for (Method method : methods) {
+                if (method.getParameterCount() != 1) {
+                    continue;
+                }
+                String methodName = method.getName();
+                if (!methodName.equals("get") && !methodName.equals("value") && !methodName.equals("valueOf") && !methodName.equals("getStat")) {
+                    continue;
+                }
+
+                Class<?> parameter = wrapPrimitive(method.getParameterTypes()[0]);
+                if (!parameter.isAssignableFrom(statConstant.getClass())) {
+                    continue;
+                }
+
+                try {
+                    method.setAccessible(true);
+                    Object value = method.invoke(spread, statConstant);
+                    if (value != null) {
+                        out.put(key, normalizeStatValue(value));
+                        return;
+                    }
+                } catch (Exception ignored) {
+                    // Try next overload.
+                }
+            }
+        }
+
         private static String normalizeStatValue(Object value) {
             if (value == null) {
                 return "0";
@@ -1281,7 +1467,60 @@ public class DiscordLinkMod {
             if (value instanceof Number number) {
                 return String.valueOf(number.intValue());
             }
+
+            Object asInt = invokeMatching(value, "intValue");
+            if (asInt instanceof Number number) {
+                return String.valueOf(number.intValue());
+            }
+
+            Object unwrapped = unwrap(value);
+            if (unwrapped instanceof Number number) {
+                return String.valueOf(number.intValue());
+            }
+
             return sanitizeToString(value);
+        }
+
+        private static boolean isValidStatKey(String key) {
+            return Objects.equals(key, "hp")
+                    || Objects.equals(key, "atk")
+                    || Objects.equals(key, "def")
+                    || Objects.equals(key, "spa")
+                    || Objects.equals(key, "spd")
+                    || Objects.equals(key, "spe");
+        }
+
+        private static boolean looksLikeObjectIdString(String value) {
+            if (value == null || value.isBlank()) {
+                return false;
+            }
+            return value.matches("[a-z0-9_$.]+@[0-9a-f]+") || value.matches("[a-z0-9_$.]+@[0-9a-f]{6,}");
+        }
+
+        private static String prettifyToken(String value) {
+            if (value == null || value.isBlank()) {
+                return "Unknown";
+            }
+
+            String normalized = value.trim().toLowerCase(Locale.ROOT).replace('_', ' ').replace('-', ' ');
+            if (normalized.isBlank()) {
+                return "Unknown";
+            }
+
+            String[] pieces = normalized.split("\\s+");
+            StringBuilder out = new StringBuilder();
+            for (String piece : pieces) {
+                if (piece.isBlank()) {
+                    continue;
+                }
+                out.append(Character.toUpperCase(piece.charAt(0)));
+                if (piece.length() > 1) {
+                    out.append(piece.substring(1));
+                }
+                out.append(' ');
+            }
+
+            return out.toString().trim();
         }
 
         private static String normalizeStatKey(Object key) {
